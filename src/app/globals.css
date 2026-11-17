@@ -15,6 +15,19 @@ html {
   scroll-behavior: smooth;
 }
 
+/* Visible keyboard focus for interactive elements (form fields use their own focus border). */
+:where(a, button, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--odin-gold-dark);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+}
+
 body {
   background-color: var(--odin-bg);
   color: var(--odin-ink);

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import {
   Search,
@@ -14,7 +14,7 @@ import {
   FileText,
   BookMarked,
 } from 'lucide-react';
-import { LEARNING_PATHS, LESSONS, LAB_CATALOG, getPathBySlug } from '@/data/curriculum';
+import { LEARNING_PATHS, LESSONS, LAB_CATALOG, getPathBySlug } from '@/data/catalog';
 import {
   AI_PM_GLOSSARY,
   INTERVIEW_QUESTIONS,
@@ -22,6 +22,7 @@ import {
   PRODUCT_TEARDOWNS,
 } from '@/data/playbookData';
 import { useProgress } from '@/context/ProgressContext';
+import { Modal } from './Modal';
 
 interface SearchModalProps {
   open: boolean;
@@ -34,26 +35,12 @@ export function SearchModal({ open, onClose }: SearchModalProps) {
   const { completedLessons } = useProgress();
   const completedSet = useMemo(() => new Set(completedLessons), [completedLessons]);
 
-  useEffect(() => {
-    if (open) {
-      setQuery('');
-      const timer = setTimeout(() => inputRef.current?.focus(), 40);
-      return () => clearTimeout(timer);
-    }
-  }, [open]);
+  const titleId = useId();
 
+  // Escape, focus trap and focus return are handled by Modal; Cmd/Ctrl+K by the Navbar.
   useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
-        e.preventDefault();
-        if (open) onClose();
-      } else if (e.key === 'Escape' && open) {
-        onClose();
-      }
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [open, onClose]);
+    if (open) setQuery('');
+  }, [open]);
 
   const results = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -112,43 +99,43 @@ export function SearchModal({ open, onClose }: SearchModalProps) {
     return { paths, lessons, labs, templates, glossary, teardowns, interviews };
   }, [query]);
 
-  if (!open) return null;
-
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-slate-900/55 px-4 pt-16 backdrop-blur-xs"
-      onClick={onClose}
-      role="dialog"
-      aria-modal="true"
-      aria-label="Search curriculum"
+    <Modal
+      open={open}
+      onClose={onClose}
+      labelledBy={titleId}
+      initialFocusRef={inputRef}
+      overlayClassName="items-start pt-16"
+      className="w-full max-w-2xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"
     >
-      <div
-        className="w-full max-w-2xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
-      >
+        <h2 id={titleId} className="sr-only">
+          Search the curriculum
+        </h2>
         <div className="flex items-center gap-3 border-b border-slate-200 px-4 py-3.5">
-          <Search className="h-5 w-5 text-slate-400" />
+          <Search className="h-5 w-5 text-slate-500" aria-hidden="true" />
           <input
             ref={inputRef}
-            type="text"
+            type="search"
+            aria-label="Search lessons, labs and playbook"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search AI PM lessons, projects, RAG, evals, pricing, MCP..."
             className="w-full bg-transparent text-sm text-slate-900 placeholder-slate-400 outline-none"
           />
           <button
+            type="button"
             onClick={onClose}
-            className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+            className="rounded-lg p-1 text-slate-500 hover:bg-slate-100 hover:text-slate-700"
             aria-label="Close search"
           >
             <X className="h-4 w-4" />
           </button>
         </div>
 
-        <div className="max-h-[65vh] overflow-y-auto p-3">
+        <div className="max-h-[65vh] overflow-y-auto p-3" tabIndex={-1}>
           {results.paths.length > 0 && (
             <div className="mb-4">
-              <div className="px-2 pb-1.5 text-[11px] font-semibold tracking-wider text-slate-400 uppercase">
+              <div className="px-2 pb-1.5 text-[11px] font-semibold tracking-wider text-slate-500 uppercase">
                 Learning Paths
               </div>
               <div className="space-y-1">
@@ -160,13 +147,13 @@ export function SearchModal({ open, onClose }: SearchModalProps) {
                     className="flex items-center justify-between rounded-xl px-3 py-2.5 text-sm transition hover:bg-amber-50/70"
                   >
                     <div className="flex items-center gap-3">
-                      <Map className="h-4 w-4 shrink-0 text-amber-600" />
+                      <Map className="h-4 w-4 shrink-0 text-amber-700" />
                       <div>
                         <div className="font-semibold text-slate-900">{path.title}</div>
                         <div className="text-xs text-slate-500">{path.badge} · {path.estimatedHours}</div>
                       </div>
                     </div>
-                    <ArrowRight className="h-4 w-4 text-slate-400" />
+                    <ArrowRight className="h-4 w-4 text-slate-500" />
                   </Link>
                 ))}
               </div>
@@ -175,7 +162,7 @@ export function SearchModal({ open, onClose }: SearchModalProps) {
 
           {results.lessons.length > 0 && (
             <div className="mb-4">
-              <div className="px-2 pb-1.5 text-[11px] font-semibold tracking-wider text-slate-400 uppercase">
+              <div className="px-2 pb-1.5 text-[11px] font-semibold tracking-wider text-slate-500 uppercase">
                 Lessons & Projects
               </div>
               <div className="space-y-1">
@@ -191,7 +178,7 @@ export function SearchModal({ open, onClose }: SearchModalProps) {
                     >
                       <div className="flex items-start gap-3">
                         {lesson.type === 'project' ? (
-                          <Wrench className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+                          <Wrench className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" />
                         ) : (
                           <BookOpen className="mt-0.5 h-4 w-4 shrink-0 text-teal-700" />
                         )}
@@ -205,7 +192,7 @@ export function SearchModal({ open, onClose }: SearchModalProps) {
                           </div>
                         </div>
                       </div>
-                      <ArrowRight className="h-4 w-4 shrink-0 text-slate-400" />
+                      <ArrowRight className="h-4 w-4 shrink-0 text-slate-500" />
                     </Link>
                   );
                 })}
@@ -215,7 +202,7 @@ export function SearchModal({ open, onClose }: SearchModalProps) {
 
           {results.labs.length > 0 && (
             <div className="mb-4">
-              <div className="px-2 pb-1.5 text-[11px] font-semibold tracking-wider text-slate-400 uppercase">
+              <div className="px-2 pb-1.5 text-[11px] font-semibold tracking-wider text-slate-500 uppercase">
                 Interactive AI PM Labs
               </div>
               <div className="space-y-1">
@@ -233,7 +220,7 @@ export function SearchModal({ open, onClose }: SearchModalProps) {
                         <div className="text-xs text-slate-500">{lab.badge}</div>
                       </div>
                     </div>
-                    <ArrowRight className="h-4 w-4 text-slate-400" />
+                    <ArrowRight className="h-4 w-4 text-slate-500" />
                   </Link>
                 ))}
               </div>
@@ -242,7 +229,7 @@ export function SearchModal({ open, onClose }: SearchModalProps) {
 
           {results.templates.length > 0 && (
             <div className="mb-4">
-              <div className="px-2 pb-1.5 text-[11px] font-semibold tracking-wider text-slate-400 uppercase">
+              <div className="px-2 pb-1.5 text-[11px] font-semibold tracking-wider text-slate-500 uppercase">
                 Playbook Templates
               </div>
               <div className="space-y-1">
@@ -254,13 +241,13 @@ export function SearchModal({ open, onClose }: SearchModalProps) {
                     className="flex items-center justify-between rounded-xl px-3 py-2.5 text-sm transition hover:bg-amber-50/70"
                   >
                     <div className="flex items-center gap-3">
-                      <FileText className="h-4 w-4 shrink-0 text-amber-600" />
+                      <FileText className="h-4 w-4 shrink-0 text-amber-700" />
                       <div>
                         <div className="font-medium text-slate-900">{tpl.title}</div>
                         <div className="text-xs text-slate-500">{tpl.category} Template</div>
                       </div>
                     </div>
-                    <ArrowRight className="h-4 w-4 text-slate-400" />
+                    <ArrowRight className="h-4 w-4 text-slate-500" />
                   </Link>
                 ))}
               </div>
@@ -269,7 +256,7 @@ export function SearchModal({ open, onClose }: SearchModalProps) {
 
           {results.teardowns.length > 0 && (
             <div className="mb-4">
-              <div className="px-2 pb-1.5 text-[11px] font-semibold tracking-wider text-slate-400 uppercase">
+              <div className="px-2 pb-1.5 text-[11px] font-semibold tracking-wider text-slate-500 uppercase">
                 Product Teardowns
               </div>
               <div className="space-y-1">
@@ -281,7 +268,7 @@ export function SearchModal({ open, onClose }: SearchModalProps) {
                     className="flex items-center justify-between rounded-xl px-3 py-2.5 text-sm transition hover:bg-amber-50/70"
                   >
                     <div className="flex items-center gap-3">
-                      <BookMarked className="h-4 w-4 shrink-0 text-amber-600" />
+                      <BookMarked className="h-4 w-4 shrink-0 text-amber-700" />
                       <div>
                         <div className="font-medium text-slate-900">
                           {td.product} ({td.company})
@@ -289,7 +276,7 @@ export function SearchModal({ open, onClose }: SearchModalProps) {
                         <div className="text-xs text-slate-500 line-clamp-1">{td.headline}</div>
                       </div>
                     </div>
-                    <ArrowRight className="h-4 w-4 shrink-0 text-slate-400" />
+                    <ArrowRight className="h-4 w-4 shrink-0 text-slate-500" />
                   </Link>
                 ))}
               </div>
@@ -298,7 +285,7 @@ export function SearchModal({ open, onClose }: SearchModalProps) {
 
           {results.interviews.length > 0 && (
             <div className="mb-4">
-              <div className="px-2 pb-1.5 text-[11px] font-semibold tracking-wider text-slate-400 uppercase">
+              <div className="px-2 pb-1.5 text-[11px] font-semibold tracking-wider text-slate-500 uppercase">
                 Interview Blueprints
               </div>
               <div className="space-y-1">
@@ -318,7 +305,7 @@ export function SearchModal({ open, onClose }: SearchModalProps) {
                         </div>
                       </div>
                     </div>
-                    <ArrowRight className="h-4 w-4 shrink-0 text-slate-400" />
+                    <ArrowRight className="h-4 w-4 shrink-0 text-slate-500" />
                   </Link>
                 ))}
               </div>
@@ -327,7 +314,7 @@ export function SearchModal({ open, onClose }: SearchModalProps) {
 
           {results.glossary.length > 0 && (
             <div>
-              <div className="px-2 pb-1.5 text-[11px] font-semibold tracking-wider text-slate-400 uppercase">
+              <div className="px-2 pb-1.5 text-[11px] font-semibold tracking-wider text-slate-500 uppercase">
                 AI PM Glossary
               </div>
               <div className="space-y-1">
@@ -345,7 +332,7 @@ export function SearchModal({ open, onClose }: SearchModalProps) {
                         <div className="text-xs text-slate-500 line-clamp-1">{g.definition}</div>
                       </div>
                     </div>
-                    <ArrowRight className="h-4 w-4 shrink-0 text-slate-400" />
+                    <ArrowRight className="h-4 w-4 shrink-0 text-slate-500" />
                   </Link>
                 ))}
               </div>
@@ -371,7 +358,6 @@ export function SearchModal({ open, onClose }: SearchModalProps) {
             {LESSONS.length} Modules · {LAB_CATALOG.length} Labs · {PRODUCT_TEARDOWNS.length} Teardowns · {PLAYBOOK_TEMPLATES.length} Templates
           </span>
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 }

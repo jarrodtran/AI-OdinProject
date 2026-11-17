@@ -21,7 +21,7 @@ import {
   SkillCategory,
   getCoursesForPath,
   getLessonsForCourse,
-} from '@/data/curriculum';
+} from '@/data/catalog';
 
 /* ========================================================================== */
 /* 1. Odin Hero Constellation Illustration                                    */
@@ -44,7 +44,7 @@ export function OdinHeroIllustration() {
       <div className="animate-odin-pulse-glow pointer-events-none absolute inset-6 rounded-full bg-gradient-to-tr from-amber-400/20 via-indigo-400/15 to-teal-400/20 blur-2xl" />
 
       <div className="relative overflow-hidden rounded-3xl border border-slate-200/90 bg-slate-950 p-3 shadow-2xl">
-        <div className="flex items-center justify-between border-b border-slate-800/90 px-3 py-2 text-[11px] text-slate-400">
+        <div className="flex items-center justify-between border-b border-slate-800/90 px-3 py-2 text-[11px] text-slate-500">
           <div className="flex items-center gap-1.5">
             <span className="h-2.5 w-2.5 rounded-full bg-rose-500/80" />
             <span className="h-2.5 w-2.5 rounded-full bg-amber-400/80" />
@@ -648,7 +648,7 @@ export function InteractiveSkillTreeMap({
                         </div>
                       </div>
                     </div>
-                    <ArrowRight className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" />
+                    <ArrowRight className="mt-0.5 h-4 w-4 shrink-0 text-slate-500" />
                   </Link>
                 );
               })}
@@ -809,7 +809,7 @@ export function ArchitectureFlowDiagram({ lessonSlug }: { lessonSlug: string }) 
             </div>
           </div>
           <div className="space-y-2.5 rounded-xl bg-slate-900 p-4">
-            <div className="font-mono text-xs text-slate-400">
+            <div className="font-mono text-xs text-slate-500">
               Prompt: &ldquo;Claim #491 meets Section 4 rules. Status:&rdquo; →{' '}
               <span className="text-amber-300">Next Token Distribution</span>
             </div>

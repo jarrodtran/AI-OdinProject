@@ -16,10 +16,14 @@ import {
   Cloud,
   LogIn,
 } from 'lucide-react';
-import { LESSONS } from '@/data/curriculum';
+import { LESSONS } from '@/data/catalog';
 import { useProgress } from '@/context/ProgressContext';
-import { SearchModal } from './SearchModal';
-import { AuthModal } from './AuthModal';
+import dynamic from 'next/dynamic';
+
+// Both dialogs load on first open. Search pulls in the playbook data, so keeping it
+// out of the navbar bundle keeps that data off every page.
+const SearchModal = dynamic(() => import('./SearchModal').then((m) => m.SearchModal), { ssr: false });
+const AuthModal = dynamic(() => import('./AuthModal').then((m) => m.AuthModal), { ssr: false });
 
 export function Navbar() {
   const pathname = usePathname();
@@ -68,7 +72,7 @@ export function Navbar() {
             </div>
           </Link>
 
-          <nav className="hidden items-center gap-1 md:flex">
+          <nav aria-label="Main" className="hidden items-center gap-1 md:flex">
             {navLinks.map((item) => {
               const Icon = item.icon;
               const active =
@@ -93,13 +97,15 @@ export function Navbar() {
 
           <div className="flex shrink-0 items-center gap-2">
             <button
+              type="button"
               onClick={() => setSearchOpen(true)}
               className="flex items-center gap-2 whitespace-nowrap rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:bg-white hover:text-slate-900"
-              aria-label="Search curriculum"
+              aria-keyshortcuts="Meta+K Control+K"
             >
-              <Search className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Search</span>
-              <kbd className="hidden rounded bg-white px-1.5 py-0.5 text-[10px] font-semibold text-slate-400 ring-1 ring-slate-200 lg:inline">
+              <Search className="h-3.5 w-3.5" aria-hidden="true" />
+              {/* Name comes from the visible text; it stays readable by screen readers on mobile. */}
+              <span className="sr-only sm:not-sr-only">Search</span>
+              <kbd className="hidden rounded bg-white px-1.5 py-0.5 text-[10px] font-semibold text-slate-500 ring-1 ring-slate-200 lg:inline">
                 ⌘K
               </kbd>
             </button>
@@ -120,11 +126,12 @@ export function Navbar() {
                 type="button"
                 onClick={() => setAuthOpen(true)}
                 className="hidden items-center gap-2 whitespace-nowrap rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-800 shadow-2xs transition hover:bg-slate-50 sm:inline-flex"
-                title={`Signed in as ${user.email}${user.roleTitle ? ` (${user.roleTitle})` : ''}`}
+                title={`Signed in as ${user.email ?? user.name}`}
+                aria-label={`Account: ${user.name}, ${syncStatus}`}
               >
                 <span className="relative flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-slate-900 text-[10px] font-bold text-amber-400">
                   {user.name
-                    .split(' ')
+                    .split(/\s+/)
                     .map((w) => w[0])
                     .slice(0, 2)
                     .join('')
@@ -135,6 +142,8 @@ export function Navbar() {
                         ? 'animate-pulse bg-indigo-500'
                         : syncStatus === 'offline'
                         ? 'bg-amber-500'
+                        : syncStatus === 'error'
+                        ? 'bg-rose-500'
                         : 'bg-emerald-500'
                     }`}
                   />
@@ -156,6 +165,7 @@ export function Navbar() {
               onClick={() => setMobileOpen((v) => !v)}
               className="rounded-lg p-2 text-slate-600 hover:bg-slate-100 md:hidden"
               aria-label="Toggle navigation menu"
+              aria-expanded={mobileOpen}
             >
               {mobileOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
             </button>
@@ -200,7 +210,7 @@ export function Navbar() {
               <Link
                 href="/paths/foundations"
                 onClick={() => setMobileOpen(false)}
-                className="mt-1 rounded-lg bg-amber-600 px-3 py-2 text-center text-sm font-semibold text-white"
+                className="mt-1 rounded-lg bg-amber-700 px-3 py-2 text-center text-sm font-semibold text-white"
               >
                 Start Foundations Path
               </Link>
@@ -209,8 +219,8 @@ export function Navbar() {
         )}
       </header>
 
-      <SearchModal open={searchOpen} onClose={() => setSearchOpen(false)} />
-      <AuthModal open={authOpen} onClose={() => setAuthOpen(false)} />
+      {searchOpen && <SearchModal open onClose={() => setSearchOpen(false)} />}
+      {authOpen && <AuthModal open onClose={() => setAuthOpen(false)} />}
     </>
   );
 }

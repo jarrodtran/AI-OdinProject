@@ -1,94 +1,70 @@
 'use client';
 
-import React, { createContext, useContext, useEffect, useRef, useState, useCallback } from 'react';
-import { PathSlug, LESSONS, LEARNING_PATHS, getLessonsForPath, getSkillBreakdown } from '@/data/curriculum';
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import {
+  signIn as authSignIn,
+  signOut as authSignOut,
+  useSession,
+} from 'next-auth/react';
+import { LESSONS, LEARNING_PATHS, getLessonsForPath, getSkillBreakdown } from '@/data/catalog';
+import {
+  DEFAULT_PROGRESS_STATE,
+  canonicalJson,
+  hashString,
+  isEmptyProgress,
+  mergeProgress,
+  sanitizeProgress,
+  type PathSlug,
+  type ProgressState,
+} from '@/lib/progress';
+
+export type { ProgressState, QuizAttempt, ProjectSubmission } from '@/lib/progress';
 
 const STORAGE_KEY = 'ai-odin-project-progress-v1';
-const USER_STORAGE_KEY = 'ai-odin-project-user-v1';
-
-export interface SyncHistoryEvent {
-  action: string;
-  timestamp: string;
-  modulesCompleted: number;
-}
+/** Which account/revision this browser last synced, and a hash of that state. */
+const SYNC_META_KEY = 'ai-odin-project-sync-v2';
+/** Pre-OAuth key that stored sync tokens and recovery codes; purged on load. */
+const LEGACY_USER_KEY = 'ai-odin-project-user-v1';
+const SYNC_DEBOUNCE_MS = 800;
 
 export interface AuthUser {
-  email: string;
   name: string;
-  roleTitle?: string;
-  provider: 'email' | 'github' | 'google';
-  syncToken: string;
-  recoveryCode?: string;
-  revision?: number;
-  backend?: string;
-  syncHistory?: SyncHistoryEvent[];
-  lastSyncedAt: string;
+  email: string | null;
+  image: string | null;
+  provider: string;
 }
 
-export type SyncStatus = 'idle' | 'syncing' | 'synced' | 'offline';
+export type AuthProviderId = 'github' | 'google';
+export type SyncStatus = 'idle' | 'syncing' | 'synced' | 'offline' | 'error';
+type Result = { ok: boolean; error?: string };
 
-export interface QuizAttempt {
-  selectedAnswers: Record<string, number>;
-  score: number;
-  total: number;
-  passedAt: string;
+interface SyncMeta {
+  uid: string;
+  revision: number;
+  hash: string;
 }
-
-export interface ProjectSubmission {
-  content: string;
-  checkedDeliverables: string[];
-  checkedRubric: string[];
-  savedAt: string;
-  portfolioUrl?: string;
-}
-
-export interface ProgressState {
-  completedLessons: string[];
-  activePathSlug: PathSlug;
-  quizScores: Record<string, QuizAttempt>;
-  projectSubmissions: Record<string, ProjectSubmission>;
-  lastVisitedLessonSlug: string | null;
-  lessonNotes: Record<string, string>;
-  bookmarkedLessons: string[];
-}
-
-const DEFAULT_STATE: ProgressState = {
-  completedLessons: [],
-  activePathSlug: 'foundations',
-  quizScores: {},
-  projectSubmissions: {},
-  lastVisitedLessonSlug: null,
-  lessonNotes: {},
-  bookmarkedLessons: [],
-};
 
 interface ProgressContextValue extends ProgressState {
   hydrated: boolean;
+  /** Whether this deployment has sign-in configured. */
+  cloudEnabled: boolean;
   user: AuthUser | null;
+  authLoading: boolean;
   syncStatus: SyncStatus;
-  signIn: (input: {
-    email: string;
-    name?: string;
-    roleTitle?: string;
-    passcode?: string;
-    provider?: 'email' | 'github' | 'google';
-    authMode?: 'auto' | 'signin' | 'register';
-  }) => Promise<{ ok: boolean; error?: string }>;
-  recoverAccount: (input: {
-    email: string;
-    recoveryCode: string;
-    newPasscode?: string;
-  }) => Promise<{ ok: boolean; error?: string }>;
-  updateProfile: (input: {
-    name: string;
-    roleTitle?: string;
-    newPasscode?: string;
-  }) => Promise<{ ok: boolean; error?: string }>;
-  rotateSyncCredentials: () => Promise<{ ok: boolean; error?: string }>;
-  deleteCloudAccount: () => Promise<{ ok: boolean; error?: string }>;
-  pullFromCloud: () => Promise<{ ok: boolean; error?: string }>;
-  signOut: () => void;
-  syncNow: () => Promise<{ ok: boolean; error?: string }>;
+  syncError: string | null;
+  lastSyncedAt: string | null;
+  signIn: (provider: AuthProviderId) => Promise<void>;
+  signOut: () => Promise<void>;
+  syncNow: () => Promise<Result>;
+  deleteCloudData: () => Promise<Result>;
   toggleLessonComplete: (slug: string) => void;
   markLessonComplete: (slug: string) => void;
   setActivePath: (slug: PathSlug) => void;
@@ -112,117 +88,90 @@ interface ProgressContextValue extends ProgressState {
   toggleBookmarkLesson: (slug: string) => void;
   exportPortfolioMarkdown: () => string;
   exportProgressJson: () => string;
-  importProgressJson: (raw: string) => { ok: boolean; error?: string };
+  importProgressJson: (raw: string) => Result;
   resetProgress: () => void;
 }
 
 const ProgressContext = createContext<ProgressContextValue | undefined>(undefined);
 
 const VALID_LESSON_SLUGS = new Set(LESSONS.map((l) => l.slug));
-const VALID_PATH_SLUGS = new Set<PathSlug>(['foundations', 'ai-product-strategy', 'technical-ai-pm']);
+const sanitize = (candidate: unknown) =>
+  sanitizeProgress(candidate, (slug) => VALID_LESSON_SLUGS.has(slug));
+const fingerprint = (s: ProgressState) => canonicalJson(sanitize(s));
 
-function sanitizeClientProgress(parsed?: Partial<ProgressState> | null): ProgressState {
-  if (!parsed || typeof parsed !== 'object') return DEFAULT_STATE;
-  return {
-    completedLessons: Array.isArray(parsed.completedLessons)
-      ? Array.from(new Set(parsed.completedLessons.filter((s) => VALID_LESSON_SLUGS.has(s))))
-      : [],
-    activePathSlug:
-      parsed.activePathSlug && VALID_PATH_SLUGS.has(parsed.activePathSlug)
-        ? parsed.activePathSlug
-        : 'foundations',
-    quizScores:
-      parsed.quizScores && typeof parsed.quizScores === 'object' ? parsed.quizScores : {},
-    projectSubmissions:
-      parsed.projectSubmissions && typeof parsed.projectSubmissions === 'object'
-        ? parsed.projectSubmissions
-        : {},
-    lastVisitedLessonSlug:
-      parsed.lastVisitedLessonSlug && VALID_LESSON_SLUGS.has(parsed.lastVisitedLessonSlug)
-        ? parsed.lastVisitedLessonSlug
-        : null,
-    lessonNotes:
-      parsed.lessonNotes && typeof parsed.lessonNotes === 'object' ? parsed.lessonNotes : {},
-    bookmarkedLessons: Array.isArray(parsed.bookmarkedLessons)
-      ? Array.from(new Set(parsed.bookmarkedLessons.filter((s) => VALID_LESSON_SLUGS.has(s))))
-      : [],
-  };
+function readMeta(): SyncMeta | null {
+  try {
+    const raw = window.localStorage.getItem(SYNC_META_KEY);
+    const m = raw ? (JSON.parse(raw) as Partial<SyncMeta>) : null;
+    if (m && typeof m.uid === 'string' && typeof m.revision === 'number' && typeof m.hash === 'string') {
+      return m as SyncMeta;
+    }
+  } catch {
+    // ignore
+  }
+  return null;
 }
 
-function mergeClientAndCloudProgress(cloud: ProgressState, local: ProgressState): ProgressState {
-  const completedLessons = Array.from(new Set([...cloud.completedLessons, ...local.completedLessons]));
-  const bookmarkedLessons = Array.from(new Set([...cloud.bookmarkedLessons, ...local.bookmarkedLessons]));
-
-  const quizScores = { ...cloud.quizScores };
-  for (const [slug, attempt] of Object.entries(local.quizScores)) {
-    const existing = quizScores[slug];
-    if (!existing || new Date(attempt.passedAt).getTime() >= new Date(existing.passedAt).getTime()) {
-      quizScores[slug] = attempt;
-    }
+function writeMeta(meta: SyncMeta) {
+  try {
+    window.localStorage.setItem(SYNC_META_KEY, JSON.stringify(meta));
+  } catch {
+    // ignore quota / privacy-mode errors
   }
-
-  const projectSubmissions = { ...cloud.projectSubmissions };
-  for (const [slug, sub] of Object.entries(local.projectSubmissions)) {
-    const existing = projectSubmissions[slug];
-    if (!existing || new Date(sub.savedAt).getTime() >= new Date(existing.savedAt).getTime()) {
-      projectSubmissions[slug] = sub;
-    }
-  }
-
-  const lessonNotes = { ...cloud.lessonNotes };
-  for (const [slug, note] of Object.entries(local.lessonNotes)) {
-    if (typeof note === 'string' && note.trim().length > 0) {
-      lessonNotes[slug] = note;
-    }
-  }
-
-  return sanitizeClientProgress({
-    completedLessons,
-    bookmarkedLessons,
-    activePathSlug: local.completedLessons.length > 0 ? local.activePathSlug : cloud.activePathSlug,
-    quizScores,
-    projectSubmissions,
-    lessonNotes,
-    lastVisitedLessonSlug: local.lastVisitedLessonSlug ?? cloud.lastVisitedLessonSlug,
-  });
 }
 
-export function ProgressProvider({ children }: { children: React.ReactNode }) {
-  const [state, setState] = useState<ProgressState>(DEFAULT_STATE);
-  const [user, setUser] = useState<AuthUser | null>(null);
-  const [syncStatus, setSyncStatus] = useState<SyncStatus>('idle');
+export function ProgressProvider({
+  children,
+  cloudEnabled = true,
+}: {
+  children: React.ReactNode;
+  cloudEnabled?: boolean;
+}) {
+  const [state, setState] = useState<ProgressState>(DEFAULT_PROGRESS_STATE);
   const [hydrated, setHydrated] = useState(false);
-  const skipSyncRef = useRef(true);
-  const initialRestoreRanRef = useRef(false);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>('idle');
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
+
+  const { data: session, status: sessionStatus } = useSession();
+  const uid = session?.user?.id ?? null;
+  const user = useMemo<AuthUser | null>(
+    () =>
+      session?.user?.id
+        ? {
+            name: session.user.name || session.user.email?.split('@')[0] || 'AI PM Learner',
+            email: session.user.email ?? null,
+            image: session.user.image ?? null,
+            provider: session.user.provider,
+          }
+        : null,
+    [session]
+  );
+
+  // Sync bookkeeping lives in refs so async callbacks always see current values.
+  const stateRef = useRef(state);
+  const uidRef = useRef<string | null>(null);
+  /** Server revision our local copy is based on; null until loaded for this user. */
+  const revisionRef = useRef<number | null>(null);
+  /** Fingerprint of the state last confirmed by the server. */
+  const syncedFingerprintRef = useRef('');
+  const inFlightRef = useRef(false);
+  const pendingRef = useRef(false);
+  const pushRef = useRef<() => Promise<Result>>(async () => ({ ok: false }));
 
   useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
+
+  // Load local progress once and purge the legacy credential store.
+  useEffect(() => {
     try {
+      window.localStorage.removeItem(LEGACY_USER_KEY);
       const raw = window.localStorage.getItem(STORAGE_KEY);
       if (raw) {
-        const parsed = JSON.parse(raw) as Partial<ProgressState>;
-        setState(sanitizeClientProgress(parsed));
-      }
-      const rawUser = window.localStorage.getItem(USER_STORAGE_KEY);
-      if (rawUser) {
-        const parsedUser = JSON.parse(rawUser) as Partial<AuthUser>;
-        if (parsedUser?.email && parsedUser?.syncToken) {
-          setUser({
-            email: parsedUser.email,
-            name: parsedUser.name || parsedUser.email.split('@')[0],
-            roleTitle: parsedUser.roleTitle,
-            provider:
-              parsedUser.provider === 'github' || parsedUser.provider === 'google'
-                ? parsedUser.provider
-                : 'email',
-            syncToken: parsedUser.syncToken,
-            recoveryCode: parsedUser.recoveryCode,
-            revision: parsedUser.revision,
-            backend: parsedUser.backend,
-            syncHistory: parsedUser.syncHistory,
-            lastSyncedAt: parsedUser.lastSyncedAt || new Date().toISOString(),
-          });
-          setSyncStatus(typeof navigator !== 'undefined' && !navigator.onLine ? 'offline' : 'synced');
-        }
+        const loaded = sanitize(JSON.parse(raw));
+        stateRef.current = loaded;
+        setState(loaded);
       }
     } catch {
       // Ignore malformed localStorage and keep default state
@@ -240,65 +189,168 @@ export function ProgressProvider({ children }: { children: React.ReactNode }) {
     }
   }, [state, hydrated]);
 
+  const markSynced = useCallback((snapshot: ProgressState, revision: number, updatedAt: string | null) => {
+    const fp = fingerprint(snapshot);
+    revisionRef.current = revision;
+    syncedFingerprintRef.current = fp;
+    if (uidRef.current) writeMeta({ uid: uidRef.current, revision, hash: hashString(fp) });
+    if (updatedAt) setLastSyncedAt(updatedAt);
+    setSyncStatus('synced');
+    setSyncError(null);
+  }, []);
+
+  /** Push local state; on a revision conflict merge with the server copy and retry. */
+  const push = useCallback(async (): Promise<Result> => {
+    if (!uidRef.current || revisionRef.current === null) {
+      return { ok: false, error: 'Cloud sync is still connecting.' };
+    }
+    if (inFlightRef.current) {
+      pendingRef.current = true;
+      return { ok: true };
+    }
+    inFlightRef.current = true;
+    setSyncStatus('syncing');
+    try {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const snapshot = stateRef.current;
+        const res = await fetch('/api/progress', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ state: snapshot, baseRevision: revisionRef.current }),
+        });
+        if (res.ok) {
+          const data = (await res.json()) as { revision: number; updatedAt: string };
+          markSynced(snapshot, data.revision, data.updatedAt);
+          return { ok: true };
+        }
+        if (res.status === 409) {
+          const data = (await res.json()) as {
+            record: { state: unknown; revision: number } | null;
+          };
+          const server = data.record;
+          const merged = server ? mergeProgress(sanitize(server.state), stateRef.current) : stateRef.current;
+          revisionRef.current = server?.revision ?? 0;
+          stateRef.current = merged;
+          setState(merged);
+          continue;
+        }
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        const error =
+          res.status === 401
+            ? 'Your session expired. Sign in again to keep syncing.'
+            : data.error || `Sync failed (${res.status}).`;
+        setSyncStatus('error');
+        setSyncError(error);
+        return { ok: false, error };
+      }
+      const error = 'Could not resolve a sync conflict. Please try again.';
+      setSyncStatus('error');
+      setSyncError(error);
+      return { ok: false, error };
+    } catch {
+      setSyncStatus('offline');
+      setSyncError(null);
+      return { ok: false, error: 'You appear to be offline. Changes are saved in this browser.' };
+    } finally {
+      inFlightRef.current = false;
+      if (pendingRef.current) {
+        pendingRef.current = false;
+        setTimeout(() => void pushRef.current(), 0);
+      }
+    }
+  }, [markSynced]);
+
+  useEffect(() => {
+    pushRef.current = push;
+  }, [push]);
+
+  /** Fetch the server copy for the signed-in user and reconcile it with local progress. */
+  const pull = useCallback(async (): Promise<Result> => {
+    const currentUid = uidRef.current;
+    if (!currentUid) return { ok: false, error: 'Not signed in.' };
+    setSyncStatus('syncing');
+    try {
+      const res = await fetch('/api/progress', { cache: 'no-store' });
+      if (uidRef.current !== currentUid) return { ok: false };
+      if (!res.ok) {
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        const error = data.error || `Could not load cloud progress (${res.status}).`;
+        setSyncStatus('error');
+        setSyncError(error);
+        return { ok: false, error };
+      }
+      const { record } = (await res.json()) as {
+        record: { state: unknown; revision: number; updatedAt: string } | null;
+      };
+
+      const local = stateRef.current;
+      const storedMeta = readMeta();
+      const meta = storedMeta?.uid === currentUid ? storedMeta : null;
+      const localDirty = !meta || hashString(fingerprint(local)) !== meta.hash;
+
+      let next = local;
+      if (record) {
+        const server = sanitize(record.state);
+        if (meta && !localDirty) {
+          next = server; // nothing new here: take the latest server copy
+        } else if (meta && meta.revision === record.revision) {
+          next = local; // only this browser changed since the last sync
+        } else {
+          next = isEmptyProgress(local) ? server : mergeProgress(server, local);
+        }
+        revisionRef.current = record.revision;
+        syncedFingerprintRef.current = fingerprint(server);
+        setLastSyncedAt(record.updatedAt);
+      } else {
+        revisionRef.current = 0;
+        syncedFingerprintRef.current = '';
+      }
+
+      stateRef.current = next;
+      setState(next);
+      if (record && fingerprint(next) === syncedFingerprintRef.current) {
+        markSynced(next, record.revision, record.updatedAt);
+        return { ok: true };
+      }
+      return push();
+    } catch {
+      setSyncStatus('offline');
+      return { ok: false, error: 'You appear to be offline. Changes are saved in this browser.' };
+    }
+  }, [markSynced, push]);
+
+  // Reconcile with the cloud whenever the signed-in account changes.
   useEffect(() => {
     if (!hydrated) return;
-    try {
-      if (user) {
-        window.localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(user));
-      } else {
-        window.localStorage.removeItem(USER_STORAGE_KEY);
-      }
-    } catch {
-      // Ignore storage quota errors
+    if (uidRef.current === uid) return;
+    uidRef.current = uid;
+    revisionRef.current = null;
+    syncedFingerprintRef.current = '';
+    setLastSyncedAt(null);
+    setSyncError(null);
+    if (!uid) {
+      setSyncStatus('idle');
+      return;
     }
-  }, [user, hydrated]);
+    void pull();
+  }, [hydrated, uid, pull]);
 
-  const userEmail = user?.email;
-  const userToken = user?.syncToken;
-
-  // Startup cloud restore/merge once per session if user was already signed in
+  // Debounced save after local changes.
   useEffect(() => {
-    if (!hydrated || !userEmail || !userToken || initialRestoreRanRef.current) return;
-    initialRestoreRanRef.current = true;
+    if (!hydrated || !uid || revisionRef.current === null) return;
+    const timer = setTimeout(() => {
+      if (fingerprint(stateRef.current) === syncedFingerprintRef.current) return;
+      void push();
+    }, SYNC_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [state, hydrated, uid, push]);
 
-    (async () => {
-      try {
-        const res = await fetch('/api/progress', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            action: 'restore',
-            email: userEmail,
-            syncToken: userToken,
-          }),
-        });
-        if (!res.ok) return;
-        const data = (await res.json()) as {
-          ok?: boolean;
-          user?: AuthUser;
-          state?: Partial<ProgressState>;
-        };
-        if (data.ok && data.state) {
-          const cloudState = sanitizeClientProgress(data.state);
-          skipSyncRef.current = true;
-          setState((localCurr) => mergeClientAndCloudProgress(cloudState, localCurr));
-          if (data.user) {
-            setUser(data.user);
-          }
-          setSyncStatus('synced');
-        }
-      } catch {
-        setSyncStatus('offline');
-      }
-    })();
-  }, [hydrated, userEmail, userToken]);
-
-  // Network online / offline sync status listener
+  // Retry when connectivity returns.
   useEffect(() => {
-    if (!hydrated || !userEmail) return;
+    if (!uid) return;
     const onOffline = () => setSyncStatus('offline');
     const onOnline = () => {
-      setSyncStatus('synced');
+      void (revisionRef.current === null ? pull() : push());
     };
     window.addEventListener('offline', onOffline);
     window.addEventListener('online', onOnline);
@@ -306,59 +358,44 @@ export function ProgressProvider({ children }: { children: React.ReactNode }) {
       window.removeEventListener('offline', onOffline);
       window.removeEventListener('online', onOnline);
     };
-  }, [hydrated, userEmail]);
+  }, [uid, pull, push]);
 
-  // Debounced auto cloud sync whenever signed-in user's ProgressState changes
-  useEffect(() => {
-    if (!hydrated || !userEmail || !userToken) return;
-    if (skipSyncRef.current) {
-      skipSyncRef.current = false;
-      return;
-    }
+  const syncNow = useCallback(async (): Promise<Result> => {
+    if (!uidRef.current) return { ok: false, error: 'Sign in first to sync progress.' };
+    if (revisionRef.current === null) return pull();
+    if (fingerprint(stateRef.current) === syncedFingerprintRef.current) return pull();
+    return push();
+  }, [pull, push]);
 
-    const timer = setTimeout(async () => {
-      setSyncStatus('syncing');
-      try {
-        const res = await fetch('/api/progress', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            action: 'sync',
-            email: userEmail,
-            syncToken: userToken,
-            mergeWithCloud: true,
-            state,
-          }),
-        });
-        if (res.ok) {
-          const data = (await res.json()) as {
-            syncedAt?: string;
-            revision?: number;
-            backend?: string;
-            syncHistory?: SyncHistoryEvent[];
-          };
-          setSyncStatus('synced');
-          setUser((prev) =>
-            prev
-              ? {
-                  ...prev,
-                  lastSyncedAt: data.syncedAt || prev.lastSyncedAt,
-                  revision: data.revision ?? prev.revision,
-                  backend: data.backend ?? prev.backend,
-                  syncHistory: data.syncHistory ?? prev.syncHistory,
-                }
-              : prev
-          );
-        } else {
-          setSyncStatus('offline');
-        }
-      } catch {
-        setSyncStatus('offline');
+  const signIn = useCallback(async (provider: AuthProviderId) => {
+    await authSignIn(provider);
+  }, []);
+
+  const signOut = useCallback(async () => {
+    await authSignOut({ redirect: false });
+  }, []);
+
+  const deleteCloudData = useCallback(async (): Promise<Result> => {
+    if (!uidRef.current) return { ok: false, error: 'Not signed in.' };
+    try {
+      const res = await fetch('/api/progress', { method: 'DELETE' });
+      if (!res.ok) {
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        return { ok: false, error: data.error || 'Could not delete cloud data.' };
       }
-    }, 600);
+      try {
+        window.localStorage.removeItem(SYNC_META_KEY);
+      } catch {
+        // ignore
+      }
+      await authSignOut({ redirect: false });
+      return { ok: true };
+    } catch {
+      return { ok: false, error: 'Network error while deleting cloud data.' };
+    }
+  }, []);
 
-    return () => clearTimeout(timer);
-  }, [state, hydrated, userEmail, userToken]);
+  /* ----------------------------- Learning state ---------------------------- */
 
   const toggleLessonComplete = useCallback((slug: string) => {
     setState((prev) => {
@@ -375,37 +412,21 @@ export function ProgressProvider({ children }: { children: React.ReactNode }) {
   const markLessonComplete = useCallback((slug: string) => {
     setState((prev) => {
       if (prev.completedLessons.includes(slug)) return prev;
-      return {
-        ...prev,
-        completedLessons: [...prev.completedLessons, slug],
-      };
+      return { ...prev, completedLessons: [...prev.completedLessons, slug] };
     });
   }, []);
 
   const setActivePath = useCallback((slug: PathSlug) => {
-    setState((prev) => ({
-      ...prev,
-      activePathSlug: slug,
-    }));
+    setState((prev) => ({ ...prev, activePathSlug: slug }));
   }, []);
 
   const saveQuizResult = useCallback(
-    (
-      lessonSlug: string,
-      selectedAnswers: Record<string, number>,
-      score: number,
-      total: number
-    ) => {
+    (lessonSlug: string, selectedAnswers: Record<string, number>, score: number, total: number) => {
       setState((prev) => ({
         ...prev,
         quizScores: {
           ...prev.quizScores,
-          [lessonSlug]: {
-            selectedAnswers,
-            score,
-            total,
-            passedAt: new Date().toISOString(),
-          },
+          [lessonSlug]: { selectedAnswers, score, total, passedAt: new Date().toISOString() },
         },
       }));
     },
@@ -426,10 +447,7 @@ export function ProgressProvider({ children }: { children: React.ReactNode }) {
         ...prev,
         projectSubmissions: {
           ...prev.projectSubmissions,
-          [lessonSlug]: {
-            ...data,
-            savedAt: new Date().toISOString(),
-          },
+          [lessonSlug]: { ...data, savedAt: new Date().toISOString() },
         },
       }));
     },
@@ -439,10 +457,7 @@ export function ProgressProvider({ children }: { children: React.ReactNode }) {
   const setLastVisitedLesson = useCallback((slug: string) => {
     setState((prev) => {
       if (prev.lastVisitedLessonSlug === slug) return prev;
-      return {
-        ...prev,
-        lastVisitedLessonSlug: slug,
-      };
+      return { ...prev, lastVisitedLessonSlug: slug };
     });
   }, []);
 
@@ -454,10 +469,7 @@ export function ProgressProvider({ children }: { children: React.ReactNode }) {
       } else {
         nextNotes[slug] = note;
       }
-      return {
-        ...prev,
-        lessonNotes: nextNotes,
-      };
+      return { ...prev, lessonNotes: nextNotes };
     });
   }, []);
 
@@ -510,9 +522,7 @@ export function ProgressProvider({ children }: { children: React.ReactNode }) {
         lines.push('', `### ${proj.title} (${isDone ? 'Completed' : 'Draft Saved'})`);
         if (sub?.portfolioUrl) lines.push(`- **External Link:** ${sub.portfolioUrl}`);
         if (sub?.savedAt) lines.push(`- **Last Saved:** ${sub.savedAt.slice(0, 10)}`);
-        if (sub?.content) {
-          lines.push('', sub.content.trim());
-        }
+        if (sub?.content) lines.push('', sub.content.trim());
       }
     });
     if (!hasProjectContent) {
@@ -531,367 +541,90 @@ export function ProgressProvider({ children }: { children: React.ReactNode }) {
     return lines.join('\n');
   }, [state]);
 
-  const exportProgressJson = useCallback(() => {
-    return JSON.stringify(
-      {
-        exportedAt: new Date().toISOString(),
-        app: 'the-ai-odin-project',
-        version: 2,
-        state,
-      },
-      null,
-      2
-    );
-  }, [state]);
+  const exportProgressJson = useCallback(
+    () =>
+      JSON.stringify(
+        { exportedAt: new Date().toISOString(), app: 'the-ai-odin-project', version: 2, state },
+        null,
+        2
+      ),
+    [state]
+  );
 
-  const importProgressJson = useCallback((raw: string): { ok: boolean; error?: string } => {
+  const importProgressJson = useCallback((raw: string): Result => {
     try {
-      const parsed = JSON.parse(raw) as { state?: Partial<ProgressState> } & Partial<ProgressState>;
-      const candidate = parsed.state ?? parsed;
+      const parsed = JSON.parse(raw) as { state?: unknown };
+      const candidate = parsed && typeof parsed === 'object' && 'state' in parsed ? parsed.state : parsed;
       if (!candidate || typeof candidate !== 'object') {
         return { ok: false, error: 'Invalid JSON structure.' };
       }
-      setState(sanitizeClientProgress(candidate));
+      setState(sanitize(candidate));
       return { ok: true };
     } catch (err) {
-      return {
-        ok: false,
-        error: err instanceof Error ? err.message : 'Could not parse JSON backup.',
-      };
+      return { ok: false, error: err instanceof Error ? err.message : 'Could not parse JSON backup.' };
     }
   }, []);
-
-  const signIn = useCallback(
-    async (input: {
-      email: string;
-      name?: string;
-      roleTitle?: string;
-      passcode?: string;
-      provider?: 'email' | 'github' | 'google';
-      authMode?: 'auto' | 'signin' | 'register';
-    }): Promise<{ ok: boolean; error?: string }> => {
-      try {
-        setSyncStatus('syncing');
-        const res = await fetch('/api/progress', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            action: 'signin',
-            authMode: input.authMode ?? 'auto',
-            email: input.email,
-            name: input.name,
-            roleTitle: input.roleTitle,
-            passcode: input.passcode,
-            provider: input.provider ?? 'email',
-            state,
-          }),
-        });
-        const data = (await res.json()) as {
-          ok?: boolean;
-          error?: string;
-          user?: AuthUser;
-          state?: Partial<ProgressState>;
-        };
-        if (!res.ok || !data.ok || !data.user) {
-          setSyncStatus('idle');
-          return { ok: false, error: data.error || 'Could not sign in.' };
-        }
-        skipSyncRef.current = true;
-        setState(sanitizeClientProgress(data.state));
-        setUser(data.user);
-        setSyncStatus('synced');
-        return { ok: true };
-      } catch (err) {
-        setSyncStatus('offline');
-        return {
-          ok: false,
-          error: err instanceof Error ? err.message : 'Network error during sign-in.',
-        };
-      }
-    },
-    [state]
-  );
-
-  const recoverAccount = useCallback(
-    async (input: {
-      email: string;
-      recoveryCode: string;
-      newPasscode?: string;
-    }): Promise<{ ok: boolean; error?: string }> => {
-      try {
-        setSyncStatus('syncing');
-        const res = await fetch('/api/progress', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            action: 'recover',
-            email: input.email,
-            recoveryCode: input.recoveryCode,
-            newPasscode: input.newPasscode,
-            state,
-          }),
-        });
-        const data = (await res.json()) as {
-          ok?: boolean;
-          error?: string;
-          user?: AuthUser;
-          state?: Partial<ProgressState>;
-        };
-        if (!res.ok || !data.ok || !data.user) {
-          setSyncStatus('idle');
-          return { ok: false, error: data.error || 'Could not recover account.' };
-        }
-        skipSyncRef.current = true;
-        setState(sanitizeClientProgress(data.state));
-        setUser(data.user);
-        setSyncStatus('synced');
-        return { ok: true };
-      } catch (err) {
-        setSyncStatus('offline');
-        return {
-          ok: false,
-          error: err instanceof Error ? err.message : 'Network error during recovery.',
-        };
-      }
-    },
-    [state]
-  );
-
-  const updateProfile = useCallback(
-    async (input: {
-      name: string;
-      roleTitle?: string;
-      newPasscode?: string;
-    }): Promise<{ ok: boolean; error?: string }> => {
-      if (!user) return { ok: false, error: 'Sign in first to update your profile.' };
-      setSyncStatus('syncing');
-      try {
-        const res = await fetch('/api/progress', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            action: 'update-profile',
-            email: user.email,
-            syncToken: user.syncToken,
-            name: input.name,
-            roleTitle: input.roleTitle,
-            newPasscode: input.newPasscode,
-          }),
-        });
-        const data = (await res.json()) as {
-          ok?: boolean;
-          error?: string;
-          user?: AuthUser;
-        };
-        if (!res.ok || !data.ok || !data.user) {
-          setSyncStatus('synced');
-          return { ok: false, error: data.error || 'Profile update failed.' };
-        }
-        setUser(data.user);
-        setSyncStatus('synced');
-        return { ok: true };
-      } catch (err) {
-        setSyncStatus('offline');
-        return {
-          ok: false,
-          error: err instanceof Error ? err.message : 'Network error updating profile.',
-        };
-      }
-    },
-    [user]
-  );
-
-  const rotateSyncCredentials = useCallback(async (): Promise<{ ok: boolean; error?: string }> => {
-    if (!user) return { ok: false, error: 'Not signed in.' };
-    setSyncStatus('syncing');
-    try {
-      const res = await fetch('/api/progress', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'rotate-token',
-          email: user.email,
-          syncToken: user.syncToken,
-        }),
-      });
-      const data = (await res.json()) as { ok?: boolean; error?: string; user?: AuthUser };
-      if (!res.ok || !data.ok || !data.user) {
-        setSyncStatus('synced');
-        return { ok: false, error: data.error || 'Could not rotate keys.' };
-      }
-      setUser(data.user);
-      setSyncStatus('synced');
-      return { ok: true };
-    } catch (err) {
-      setSyncStatus('offline');
-      return {
-        ok: false,
-        error: err instanceof Error ? err.message : 'Network error rotating keys.',
-      };
-    }
-  }, [user]);
-
-  const deleteCloudAccount = useCallback(async (): Promise<{ ok: boolean; error?: string }> => {
-    if (!user) return { ok: false, error: 'Not signed in.' };
-    try {
-      const res = await fetch('/api/progress', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'delete-account',
-          email: user.email,
-          syncToken: user.syncToken,
-        }),
-      });
-      const data = (await res.json()) as { ok?: boolean; error?: string };
-      if (!res.ok || !data.ok) {
-        return { ok: false, error: data.error || 'Could not delete cloud account.' };
-      }
-      setUser(null);
-      setSyncStatus('idle');
-      return { ok: true };
-    } catch (err) {
-      return {
-        ok: false,
-        error: err instanceof Error ? err.message : 'Network error deleting account.',
-      };
-    }
-  }, [user]);
-
-  const pullFromCloud = useCallback(async (): Promise<{ ok: boolean; error?: string }> => {
-    if (!user) return { ok: false, error: 'Sign in first to pull cloud progress.' };
-    setSyncStatus('syncing');
-    try {
-      const res = await fetch('/api/progress', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'restore',
-          email: user.email,
-          syncToken: user.syncToken,
-        }),
-      });
-      const data = (await res.json()) as {
-        ok?: boolean;
-        error?: string;
-        user?: AuthUser;
-        state?: Partial<ProgressState>;
-      };
-      if (!res.ok || !data.ok || !data.state) {
-        setSyncStatus('offline');
-        return { ok: false, error: data.error || 'Could not pull cloud state.' };
-      }
-      const cloudState = sanitizeClientProgress(data.state);
-      skipSyncRef.current = true;
-      setState((localCurr) => mergeClientAndCloudProgress(cloudState, localCurr));
-      if (data.user) setUser(data.user);
-      setSyncStatus('synced');
-      return { ok: true };
-    } catch (err) {
-      setSyncStatus('offline');
-      return {
-        ok: false,
-        error: err instanceof Error ? err.message : 'Network error pulling from cloud.',
-      };
-    }
-  }, [user]);
-
-  const signOut = useCallback(() => {
-    setUser(null);
-    setSyncStatus('idle');
-    initialRestoreRanRef.current = false;
-  }, []);
-
-  const syncNow = useCallback(async (): Promise<{ ok: boolean; error?: string }> => {
-    if (!user) return { ok: false, error: 'Sign in first to sync progress.' };
-    setSyncStatus('syncing');
-    try {
-      const res = await fetch('/api/progress', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'sync',
-          email: user.email,
-          syncToken: user.syncToken,
-          mergeWithCloud: true,
-          state,
-        }),
-      });
-      const data = (await res.json()) as {
-        ok?: boolean;
-        error?: string;
-        syncedAt?: string;
-        revision?: number;
-        backend?: string;
-        syncHistory?: SyncHistoryEvent[];
-        state?: Partial<ProgressState>;
-      };
-      if (!res.ok || !data.ok) {
-        setSyncStatus('offline');
-        return { ok: false, error: data.error || 'Sync failed.' };
-      }
-      if (data.state) {
-        skipSyncRef.current = true;
-        setState(sanitizeClientProgress(data.state));
-      }
-      setUser((prev) =>
-        prev
-          ? {
-              ...prev,
-              lastSyncedAt: data.syncedAt || new Date().toISOString(),
-              revision: data.revision ?? prev.revision,
-              backend: data.backend ?? prev.backend,
-              syncHistory: data.syncHistory ?? prev.syncHistory,
-            }
-          : prev
-      );
-      setSyncStatus('synced');
-      return { ok: true };
-    } catch (err) {
-      setSyncStatus('offline');
-      return {
-        ok: false,
-        error: err instanceof Error ? err.message : 'Offline — changes kept locally.',
-      };
-    }
-  }, [user, state]);
 
   const resetProgress = useCallback(() => {
-    setState(DEFAULT_STATE);
+    setState(DEFAULT_PROGRESS_STATE);
   }, []);
 
-  return (
-    <ProgressContext.Provider
-      value={{
-        ...state,
-        hydrated,
-        user,
-        syncStatus,
-        signIn,
-        recoverAccount,
-        updateProfile,
-        rotateSyncCredentials,
-        deleteCloudAccount,
-        pullFromCloud,
-        signOut,
-        syncNow,
-        toggleLessonComplete,
-        markLessonComplete,
-        setActivePath,
-        saveQuizResult,
-        saveProjectSubmission,
-        setLastVisitedLesson,
-        saveLessonNote,
-        toggleBookmarkLesson,
-        exportPortfolioMarkdown,
-        exportProgressJson,
-        importProgressJson,
-        resetProgress,
-      }}
-    >
-      {children}
-    </ProgressContext.Provider>
+  const value = useMemo<ProgressContextValue>(
+    () => ({
+      ...state,
+      hydrated,
+      cloudEnabled,
+      user,
+      authLoading: sessionStatus === 'loading',
+      syncStatus,
+      syncError,
+      lastSyncedAt,
+      signIn,
+      signOut,
+      syncNow,
+      deleteCloudData,
+      toggleLessonComplete,
+      markLessonComplete,
+      setActivePath,
+      saveQuizResult,
+      saveProjectSubmission,
+      setLastVisitedLesson,
+      saveLessonNote,
+      toggleBookmarkLesson,
+      exportPortfolioMarkdown,
+      exportProgressJson,
+      importProgressJson,
+      resetProgress,
+    }),
+    [
+      state,
+      hydrated,
+      cloudEnabled,
+      user,
+      sessionStatus,
+      syncStatus,
+      syncError,
+      lastSyncedAt,
+      signIn,
+      signOut,
+      syncNow,
+      deleteCloudData,
+      toggleLessonComplete,
+      markLessonComplete,
+      setActivePath,
+      saveQuizResult,
+      saveProjectSubmission,
+      setLastVisitedLesson,
+      saveLessonNote,
+      toggleBookmarkLesson,
+      exportPortfolioMarkdown,
+      exportProgressJson,
+      importProgressJson,
+      resetProgress,
+    ]
   );
+
+  return <ProgressContext.Provider value={value}>{children}</ProgressContext.Provider>;
 }
 
 export function useProgress() {
