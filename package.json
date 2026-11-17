@@ -6,21 +6,40 @@
     "dev": "next dev -p 3000",
     "build": "next build",
     "start": "next start -p 3000",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "generate:index": "tsx scripts/generate-lesson-index.ts",
+    "prebuild": "npm run generate:index",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint ."
   },
   "dependencies": {
+    "@upstash/redis": "1.41.0",
     "lucide-react": "^0.511.0",
     "next": "^15.3.0",
+    "next-auth": "5.0.0-beta.32",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react-dom": "^19.1.0",
+    "server-only": "0.0.1"
   },
   "devDependencies": {
+    "@eslint/eslintrc": "3.3.7",
     "@tailwindcss/postcss": "^4.1.0",
     "@types/node": "^22.15.0",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
+    "axe-core": "4.14.1",
+    "eslint": "9.39.5",
+    "eslint-config-next": "15.5.29",
     "postcss": "^8.5.0",
     "tailwindcss": "^4.1.0",
-    "typescript": "^5.8.0"
+    "tsx": "4.23.15",
+    "typescript": "^5.8.0",
+    "vitest": "4.1.12"
+  },
+  "overrides": {
+    "next": {
+      "postcss": "8.5.33"
+    }
   }
 }

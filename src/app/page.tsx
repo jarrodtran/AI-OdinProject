@@ -22,7 +22,7 @@ import {
   LAB_CATALOG,
   getLessonsForPath,
   getLessonBySlug,
-} from '@/data/curriculum';
+} from '@/data/catalog';
 import {
   AI_PM_GLOSSARY,
   DECISION_FRAMEWORKS,
@@ -132,12 +132,12 @@ export default function HomePage() {
         <div className="mx-auto grid max-w-6xl items-center gap-10 px-4 py-14 sm:px-6 sm:py-20 lg:grid-cols-12">
           <div className="animate-odin-fade-up text-center lg:col-span-7 lg:text-left">
             <div className="inline-flex items-center gap-2 rounded-full border border-amber-200 bg-amber-50 px-3.5 py-1 text-xs font-semibold text-amber-800 shadow-2xs">
-              <Compass className="h-3.5 w-3.5 text-amber-600" />
+              <Compass className="h-3.5 w-3.5 text-amber-700" />
               Free, Open-Curriculum AI Product Management Mastery
             </div>
 
             <h1 className="mt-5 text-4xl font-extrabold tracking-tight text-slate-900 sm:text-5xl xl:text-6xl">
-              Your Career in <span className="text-amber-600">AI Product Management</span> Starts Here
+              Your Career in <span className="text-amber-700">AI Product Management</span> Starts Here
             </h1>
 
             <p className="mx-auto mt-5 max-w-2xl text-base leading-relaxed text-slate-600 sm:text-lg lg:mx-0">
@@ -149,7 +149,7 @@ export default function HomePage() {
             <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row lg:justify-start">
               <Link
                 href="/paths"
-                className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-amber-600 px-6 py-3.5 text-sm font-bold text-white shadow-sm transition hover:-translate-y-0.5 hover:bg-amber-700 sm:w-auto"
+                className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-amber-700 px-6 py-3.5 text-sm font-bold text-white shadow-sm transition hover:-translate-y-0.5 hover:bg-amber-800 sm:w-auto"
               >
                 View Full Curriculum
                 <ArrowRight className="h-4 w-4" />
@@ -314,7 +314,7 @@ export default function HomePage() {
               <div className="mt-5 flex flex-wrap gap-2.5">
                 <Link
                   href={activeDiag.trackHref}
-                  className="inline-flex items-center gap-1.5 rounded-xl bg-amber-600 px-4 py-2.5 text-xs font-bold text-white shadow-xs transition hover:bg-amber-700"
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-amber-700 px-4 py-2.5 text-xs font-bold text-white shadow-xs transition hover:bg-amber-800"
                 >
                   {activeDiag.trackLabel} <ArrowRight className="h-3.5 w-3.5" />
                 </Link>
@@ -497,7 +497,7 @@ export default function HomePage() {
                 <span className="rounded-full bg-indigo-50 px-2.5 py-0.5 text-[11px] font-semibold text-indigo-700">
                   {lab.badge}
                 </span>
-                <FlaskConical className="h-4 w-4 text-slate-400 transition group-hover:text-indigo-600" />
+                <FlaskConical className="h-4 w-4 text-slate-500 transition group-hover:text-indigo-600" />
               </div>
               <h3 className="mt-3 text-base font-bold text-slate-900 group-hover:text-indigo-700">
                 {lab.title}
